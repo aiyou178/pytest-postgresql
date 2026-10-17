@@ -307,13 +307,14 @@ The available values are:
 The session setting applies immediately before database creation and does not
 require a server restart. Explicit strategies require PostgreSQL support:
 ``WAL_LOG`` requires PostgreSQL 15 or newer, while ``file_copy`` and ``clone``
-require a server providing ``file_copy_method``. PostgreSQL reports unsupported
+require PostgreSQL 18 or newer for ``file_copy_method``. PostgreSQL reports unsupported
 settings or strategies directly.
 
-``clone`` also requires filesystem reflink support for the PostgreSQL data
-directory. A filesystem or Docker storage driver without reflinks can reject
-cloning; tmpfs does not provide reflinks. Benchmark on your actual storage before
-choosing a strategy, since ``FILE_COPY`` also incurs checkpoint costs.
+``clone`` can share file blocks when the PostgreSQL data directory's filesystem
+supports reflinks, such as suitable XFS, Btrfs, or APFS configurations. Without
+reflinks, the operating system may copy the data instead, which can be slower,
+or reject the operation. tmpfs does not provide reflinks. Benchmark on your actual
+storage before choosing a strategy, since ``FILE_COPY`` also incurs checkpoint costs.
 
 Using a maintenance database other than ``postgres``
 ----------------------------------------------------
