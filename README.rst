@@ -272,6 +272,49 @@ For async tests against an external server, create a client fixture with
 
 By default, it connects to ``127.0.0.1:5432``.
 
+Choosing how test databases are cloned
+--------------------------------------
+
+Use ``create_strategy`` on ``postgresql_proc`` or ``postgresql_noproc`` to choose
+how synchronous and asynchronous client fixtures clone the session's template
+database for each test. The setting only affects client database creation;
+initial and layered template databases keep PostgreSQL's default behavior.
+
+.. code-block:: python
+
+    postgresql_my_proc = factories.postgresql_proc(create_strategy="clone")
+    postgresql_my = factories.postgresql("postgresql_my_proc")
+
+.. code-block:: sh
+
+    pytest --postgresql-create-strategy=clone
+
+.. code-block:: ini
+
+    [pytest]
+    postgresql_create_strategy = clone
+
+The available values are:
+
+* Unset (the default): no ``STRATEGY`` clause or session setting is sent, leaving
+  the choice to PostgreSQL.
+* ``wal_log``: ``CREATE DATABASE ... STRATEGY WAL_LOG``.
+* ``file_copy``: ``SET file_copy_method = copy``, followed by
+  ``CREATE DATABASE ... STRATEGY FILE_COPY`` on the same connection.
+* ``clone``: ``SET file_copy_method = clone``, followed by
+  ``CREATE DATABASE ... STRATEGY FILE_COPY`` on the same connection.
+
+The session setting applies immediately before database creation and does not
+require a server restart. Explicit strategies require PostgreSQL support:
+``WAL_LOG`` requires PostgreSQL 15 or newer, while ``file_copy`` and ``clone``
+require a server providing ``file_copy_method``. PostgreSQL reports unsupported
+settings or strategies directly.
+
+``clone`` also requires filesystem reflink support for the PostgreSQL data
+directory. A filesystem or Docker storage driver without reflinks can reject
+cloning; tmpfs does not provide reflinks. Benchmark on your actual storage before
+choosing a strategy, since ``FILE_COPY`` also incurs checkpoint costs.
+
 Using a maintenance database other than ``postgres``
 ----------------------------------------------------
 
@@ -416,6 +459,12 @@ You can define settings via fixture factory arguments, command line options, or 
      - --postgresql-load-autocommit
      - postgresql_load_autocommit
      - False
+   * - Test database cloning strategy
+     - create_strategy
+     - create_strategy
+     - --postgresql-create-strategy
+     - postgresql_create_strategy
+     - PostgreSQL's default
    * - PostgreSQL connection options
      - options
      - options

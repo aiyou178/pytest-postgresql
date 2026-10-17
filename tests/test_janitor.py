@@ -9,6 +9,7 @@ import psycopg
 import pytest
 from packaging.version import parse
 from psycopg import AsyncCursor
+from psycopg.sql import Composable
 
 from pytest_postgresql.executors import PostgreSQLExecutor
 from pytest_postgresql.factories.noprocess import xdistify_dbname
@@ -18,6 +19,103 @@ TEST_SQL_FILE = Path(__file__).resolve().parent / "test_sql" / "test.sql"
 
 VERSION = parse("10")
 TEST_PASSWORD = "some_password"  # noqa: S105
+
+CREATE_STRATEGY_CASES = [
+    (None, ['CREATE DATABASE "quoted""database" TEMPLATE "quoted""template"']),
+    ("wal_log", ['CREATE DATABASE "quoted""database" TEMPLATE "quoted""template" STRATEGY WAL_LOG']),
+    (
+        "file_copy",
+        [
+            "SET file_copy_method = copy",
+            'CREATE DATABASE "quoted""database" TEMPLATE "quoted""template" STRATEGY FILE_COPY',
+        ],
+    ),
+    (
+        "clone",
+        [
+            "SET file_copy_method = clone",
+            'CREATE DATABASE "quoted""database" TEMPLATE "quoted""template" STRATEGY FILE_COPY',
+        ],
+    ),
+]
+
+
+def _creation_statements(cursor: MagicMock | AsyncMock) -> list[str]:
+    """Read database-creation statements sent to the PostgreSQL driver."""
+    statements = []
+    for call in cursor.execute.call_args_list:
+        statement = call.args[0]
+        if isinstance(statement, Composable):
+            statement = statement.as_string()
+        if statement.startswith(("CREATE DATABASE ", "SET ")):
+            statements.append(statement)
+    return statements
+
+
+@pytest.mark.parametrize(("create_strategy", "expected"), CREATE_STRATEGY_CASES)
+@patch("pytest_postgresql.janitor.psycopg.connect")
+def test_janitor_create_strategy(connect_mock: MagicMock, create_strategy: str | None, expected: list[str]) -> None:
+    """Select the requested SQL strategy and safely quote database identifiers."""
+    janitor = DatabaseJanitor(
+        user="user",
+        host="host",
+        port=1234,
+        dbname='quoted"database',
+        template_dbname='quoted"template',
+        create_strategy=create_strategy,
+    )
+    janitor.init()
+    assert _creation_statements(connect_mock.return_value.cursor.return_value) == expected
+
+
+@pytest.mark.parametrize(("create_strategy", "expected"), CREATE_STRATEGY_CASES)
+@pytest.mark.asyncio
+async def test_async_janitor_create_strategy(create_strategy: str | None, expected: list[str]) -> None:
+    """Await the session setting before async database creation on the same connection."""
+    conn_mock = _make_async_conn_mock()
+    cursor = AsyncMock(spec=AsyncCursor)
+    conn_mock.cursor.return_value.__aenter__.return_value = cursor
+    with patch("pytest_postgresql.janitor.psycopg.AsyncConnection.connect", AsyncMock(return_value=conn_mock)):
+        janitor = AsyncDatabaseJanitor(
+            user="user",
+            host="host",
+            port=1234,
+            dbname='quoted"database',
+            template_dbname='quoted"template',
+            create_strategy=create_strategy,
+        )
+        await janitor.init()
+    assert _creation_statements(cursor) == expected
+    assert cursor.execute.await_count == cursor.execute.call_count
+
+
+@pytest.mark.parametrize("template_dbname", [None, "base_template"])
+@patch("pytest_postgresql.janitor.psycopg.connect")
+def test_create_strategy_leaves_template_creation_unchanged(
+    connect_mock: MagicMock, template_dbname: str | None
+) -> None:
+    """Creating initial and layered templates uses PostgreSQL's defaults."""
+    janitor = DatabaseJanitor(
+        user="user",
+        host="host",
+        port=1234,
+        dbname="new_template",
+        template_dbname=template_dbname,
+        as_template=True,
+        create_strategy="clone",
+    )
+    janitor.init()
+    template_clause = ' TEMPLATE "base_template"' if template_dbname else ""
+    assert _creation_statements(connect_mock.return_value.cursor.return_value) == [
+        f'CREATE DATABASE "new_template"{template_clause} IS_TEMPLATE = true'
+    ]
+
+
+@pytest.mark.parametrize("janitor_class", [DatabaseJanitor, AsyncDatabaseJanitor])
+def test_invalid_create_strategy(janitor_class: type[DatabaseJanitor | AsyncDatabaseJanitor]) -> None:
+    """Reject unsupported strategies before opening a connection."""
+    with pytest.raises(ValueError, match="Invalid PostgreSQL create_strategy 'invalid'"):
+        janitor_class(user="user", host="host", port=1234, dbname="dbname", create_strategy="invalid")
 
 
 @pytest.mark.parametrize("version", [VERSION, 10, "10"])
